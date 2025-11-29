@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-echo "准备将 `main_kivy.py` 作为 Android 入口构建（会临时备份现有 `main.py`）"
+echo "准备将 main_kivy.py 作为 Android 入口构建（会临时备份现有 main.py ）"
 
 if [ ! -f main_kivy.py ]; then
   echo "找不到 main_kivy.py，取消。"
@@ -22,66 +22,34 @@ cp main_kivy.py main.py
 echo "开始 buildozer 构建（可能会很长）"
 if command -v docker >/dev/null 2>&1; then
   echo "检测到 docker，使用 kivy/buildozer 镜像（推荐）"
-  docker run --rm -v "$PWD":/home/user/hostcwd -w /home/user/hostcwd kivy/buildozer:latest /bin/bash -lc "buildozer -v android debug"
+  # 直接以 buildozer 命令作为容器命令，避免依赖 /bin/bash 作为入口
+  # 为避免容器对宿主文件做 chown（可能无权限），先把源码复制到临时目录（排除 .venv/.git 等），
+  # 在临时目录内运行容器构建，构建产物会复制回宿主仓库。
+  BUILD_TMP=$(mktemp -d)
+  echo "创建临时构建目录: $BUILD_TMP"
+  # 使用 rsync 风格复制，排除大型/宿主敏感目录
+  rsync -a --exclude='.venv' --exclude='.git' --exclude='.buildozer' --exclude='bin' --exclude='dist' --exclude='build' --exclude='*.zip' ./ "$BUILD_TMP/"
+
+  echo "在临时目录中运行 buildozer..."
+  # buildozer.spec 中已设置 warn_on_root = 0，所以不需要管道确认
+  # 通过创建许可证接受文件来自动接受 SDK 许可证
+  docker run --rm -v "$BUILD_TMP":/work -w /work --entrypoint /bin/bash kivy/buildozer:latest -c "
+    mkdir -p /root/.android
+    touch /root/.android/repositories.cfg
+    mkdir -p /root/.buildozer/android/platform/android-sdk/licenses
+    echo 'android-sdk-license' > /root/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
+    echo '24333f8a63b6825ea9c5514f83c2829b004d48246d8a1186ae5054fe7ee979c8' >> /root/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
+    buildozer -v android debug
+  "
+
+  echo "构建完成，复制产物回仓库（如果有）"
+  mkdir -p bin
+  if [ -d "$BUILD_TMP/bin" ]; then
+    cp -a "$BUILD_TMP/bin/"* bin/ || true
+  fi
+
+  # 清理临时目录
+  rm -rf "$BUILD_TMP"
 else
   buildozer -v android debug
 fi
-
-BUILD_EXIT=$?
-
-echo "构建结束，恢复原始 main.py（如果有备份）"
-if [ -f main.py.bak_for_build ]; then
-  mv -f main.py.bak_for_build main.py
-fi
-
-exit $BUILD_EXIT
-#!/usr/bin/env bash
-# APK 快速编译脚本
-
-echo "🚀 启动 main.py 到 APK 编译"
-echo "=============================="
-echo ""
-
-# 检查环境
-echo "📋 第一步: 检查编译环境..."
-python3 apk_generator.py check
-if [ $? -ne 0 ]; then
-    echo "❌ 环境检查失败！"
-    exit 1
-fi
-
-echo ""
-echo "✅ 环境检查完毕！"
-echo ""
-
-# 显示编译信息
-echo "📝 编译信息:"
-python3 apk_generator.py info
-
-echo ""
-echo "🔨 第二步: 开始编译 APK..."
-echo "这可能需要 60-120 分钟，请稍候..."
-echo ""
-
-# 开始编译
-cd /workspaces/apk-builder
-buildozer -v android debug
-
-# 检查编译结果
-echo ""
-if [ -f "bin/xingchen-2.0-debug.apk" ]; then
-    echo "✅ 编译成功！"
-    echo ""
-    echo "📦 生成的 APK 信息:"
-    ls -lh bin/xingchen-2.0-debug.apk
-    echo ""
-    echo "📱 安装到手机:"
-    echo "   adb install bin/xingchen-2.0-debug.apk"
-else
-    echo "❌ 编译失败！"
-    echo "请查看上面的错误信息。"
-    exit 1
-fi
-
-echo ""
-echo "🎉 完成！"

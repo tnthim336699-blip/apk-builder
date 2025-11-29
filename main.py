@@ -1,531 +1,386 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from kivy.app import App
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.label import Label
+from kivy.uix.button import Button
+from kivy.uix.checkbox import CheckBox
+from kivy.uix.textinput import TextInput
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.filechooser import FileChooserListView
+from kivy.clock import mainthread
+import threading
+import os
+from analyzer import (
+    extract_apk_completely, analyze_file_structure, extract_all_images,
+    analyze_android_manifest, analyze_code_files, analyze_resource_files,
+    detect_malicious_behavior, create_comprehensive_zip
+)
+
+
+class AnalyzerLayout(BoxLayout):
+    def __init__(self, **kwargs):
+        super().__init__(orientation='vertical', **kwargs)
+        self.filechooser = FileChooserListView(size_hint=(1, 0.6))
+        self.add_widget(self.filechooser)
+
+        controls = BoxLayout(size_hint=(1, 0.1))
+        self.extract_images_cb = CheckBox(active=True)
+        controls.add_widget(Label(text='提取图片'))
+        controls.add_widget(self.extract_images_cb)
+        self.add_widget(controls)
+
+        run_btn = Button(text='开始深度分析', size_hint=(1, 0.1))
+        run_btn.bind(on_release=self.on_run)
+        self.add_widget(run_btn)
+
+        self.output = TextInput(readonly=True, size_hint=(1, 0.2))
+        self.add_widget(self.output)
+
+    def on_run(self, *args):
+        selection = self.filechooser.selection
+        if not selection:
+            self.append_output('请先选择 APK 文件')
+            return
+        apk_path = selection[0]
+        threading.Thread(target=self.run_analysis, args=(apk_path,)).start()
+
+    def append_output(self, text):
+        self.output.text += text + '\n'
+
+    @mainthread
+    def update_ui_text(self, text):
+        self.append_output(text)
+
+    def run_analysis(self, apk_path):
+        try:
+            self.update_ui_text('正在解压 APK...')
+            extract_dir, files = extract_apk_completely(apk_path)
+
+            self.update_ui_text('分析文件结构...')
+            file_struct = analyze_file_structure(extract_dir)
+
+            image_count = 0
+            image_dir = None
+            if self.extract_images_cb.active:
+                self.update_ui_text('提取图片...')
+                image_dir = f"{PathName(apk_path).stem}_photos"
+                image_count = extract_all_images(extract_dir, image_dir)
+                self.update_ui_text(f'提取图片: {image_count} 张')
+
+            self.update_ui_text('分析 AndroidManifest...')
+            manifest = analyze_android_manifest(extract_dir)
+
+            self.update_ui_text('分析代码文件...')
+            code = analyze_code_files(extract_dir)
+
+            self.update_ui_text('检测恶意行为...')
+            findings = detect_malicious_behavior(manifest, code, {})
+
+            overview = [f"APK: {os.path.basename(apk_path)}", f"文件数: {file_struct['total_files']}"]
+            if findings:
+                overview.append('发现可疑项:')
+                overview.extend(findings)
+            else:
+                overview.append('未发现明显恶意行为')
+
+            self.update_ui_text('\n'.join(overview))
+
+            zipfile = create_comprehensive_zip(apk_path, extract_dir, '\n'.join(overview), '', files, image_dir)
+            self.update_ui_text(f'已生成报告压缩: {zipfile}')
+
+        except Exception as e:
+            self.update_ui_text(f'分析出错: {e}')
+
+
+class AnalyzerApp(App):
+    def build(self):
+        return AnalyzerLayout()
+
+
+def PathName(p):
+    # helper to get Path-like stem without importing pathlib repeatedly
+    return __import__('pathlib').Path(p)
+
+
+if __name__ == '__main__':
+    AnalyzerApp().run()
+#!/usr/bin/env python3
+"""
+XingChen APK Builder - Kivy 版本
+用于 Android 平台的应用程序
+"""
+
+from kivy.app import App
+from kivy.uix.gridlayout import GridLayout
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.label import Label
+from kivy.uix.button import Button
+from kivy.uix.textinput import TextInput
+from kivy.uix.popup import Popup
+from kivy.uix.spinner import Spinner
+from kivy.core.window import Window
+from kivy.graphics import Color, Rectangle
 import zipfile
 import os
-import shutil
 import threading
 from pathlib import Path
 import re
 import json
 import hashlib
-import tempfile
-import subprocess
 
-class AdvancedAPKAnalyzer:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("星辰锁机病毒识别程序 v2.0")
-        self.root.geometry("900x700")
-        self.temp_dir = None
-        self.setup_ui()
+
+# 设置窗口大小
+Window.size = (720, 1280)
+
+
+class APKAnalyzer:
+    """APK 文件分析器"""
+    
+    def __init__(self):
+        self.apk_info = {}
         
-    def setup_ui(self):
-        # 主框架
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+    def analyze_apk(self, apk_path):
+        """分析 APK 文件"""
+        try:
+            with zipfile.ZipFile(apk_path, 'r') as apk:
+                # 获取 AndroidManifest.xml
+                manifest = self._parse_manifest(apk)
+                
+                # 获取资源信息
+                resources = self._list_resources(apk)
+                
+                # 获取文件大小
+                size = os.path.getsize(apk_path)
+                
+                return {
+                    'status': 'success',
+                    'size': size,
+                    'manifest': manifest,
+                    'resources_count': len(resources),
+                    'resources': resources[:20]  # 前20个资源
+                }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
+    
+    def _parse_manifest(self, apk):
+        """解析 AndroidManifest.xml"""
+        try:
+            manifest_data = apk.read('AndroidManifest.xml')
+            # 简单的二进制解析
+            manifest_str = str(manifest_data)
+            
+            # 提取包名
+            package_match = re.search(r'package=[\'\"]([^\'\"]*)[\'\"]', manifest_str)
+            package = package_match.group(1) if package_match else 'Unknown'
+            
+            return {
+                'package': package,
+                'activities': [],
+                'permissions': []
+            }
+        except:
+            return {'package': 'Unknown'}
+    
+    def _list_resources(self, apk):
+        """列出 APK 中的资源"""
+        resources = []
+        for name in apk.namelist():
+            if name.startswith('res/'):
+                resources.append(name)
+        return resources
+    
+    def calculate_hash(self, apk_path):
+        """计算 APK 文件的 MD5 哈希"""
+        try:
+            md5 = hashlib.md5()
+            with open(apk_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b''):
+                    md5.update(chunk)
+            return md5.hexdigest()
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+
+class XingChenApp(App):
+    """XingChen APK Builder 主应用"""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.analyzer = APKAnalyzer()
+        self.analysis_result = None
+        
+    def build(self):
+        """构建 UI"""
+        main_layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
         
         # 标题
-        title_label = ttk.Label(main_frame, text="星辰锁机病毒识别程序 v2.0", 
-                               font=("Arial", 16, "bold"), foreground="darkblue")
-        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+        title = Label(
+            text='XingChen APK Builder',
+            size_hint_y=None,
+            height=50,
+            font_size='24sp'
+        )
+        main_layout.add_widget(title)
         
-        # APK选择区域
-        apk_frame = ttk.LabelFrame(main_frame, text="APK文件选择", padding="10")
-        apk_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        # 选项卡布局
+        self.tab_layout = BoxLayout(orientation='vertical', size_hint_y=None, height=50)
         
-        self.apk_path = tk.StringVar()
-        ttk.Entry(apk_frame, textvariable=self.apk_path, width=70).grid(row=0, column=0, padx=(0, 10))
-        ttk.Button(apk_frame, text="选择APK", command=self.select_apk).grid(row=0, column=1)
+        # 标签按钮
+        analyze_btn = Button(text='分析 APK', size_hint_x=0.5)
+        analyze_btn.bind(on_press=self.show_analyze_tab)
+        self.tab_layout.add_widget(analyze_btn)
         
-        # 分析选项
-        options_frame = ttk.LabelFrame(main_frame, text="分析选项", padding="10")
-        options_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        build_btn = Button(text='构建应用', size_hint_x=0.5)
+        build_btn.bind(on_press=self.show_build_tab)
+        self.tab_layout.add_widget(build_btn)
         
-        self.extract_images = tk.BooleanVar(value=True)
-        self.analyze_manifest = tk.BooleanVar(value=True)
-        self.analyze_code = tk.BooleanVar(value=True)
-        self.analyze_resources = tk.BooleanVar(value=True)
+        main_layout.add_widget(self.tab_layout)
         
-        ttk.Checkbutton(options_frame, text="提取图片", variable=self.extract_images).grid(row=0, column=0, sticky=tk.W)
-        ttk.Checkbutton(options_frame, text="分析Manifest", variable=self.analyze_manifest).grid(row=0, column=1, sticky=tk.W)
-        ttk.Checkbutton(options_frame, text="分析代码", variable=self.analyze_code).grid(row=0, column=2, sticky=tk.W)
-        ttk.Checkbutton(options_frame, text="分析资源", variable=self.analyze_resources).grid(row=0, column=3, sticky=tk.W)
+        # 内容区域
+        self.content_area = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        main_layout.add_widget(self.content_area)
+        
+        # 默认显示分析界面
+        self.show_analyze_tab(None)
+        
+        return main_layout
+    
+    def show_analyze_tab(self, instance):
+        """显示 APK 分析界面"""
+        self.content_area.clear_widgets()
+        
+        layout = BoxLayout(orientation='vertical', spacing=10)
+        
+        # 文件路径输入
+        path_input = TextInput(
+            text='/path/to/app.apk',
+            multiline=False,
+            size_hint_y=None,
+            height=40
+        )
+        layout.add_widget(Label(text='APK 文件路径:', size_hint_y=None, height=30))
+        layout.add_widget(path_input)
         
         # 分析按钮
-        ttk.Button(main_frame, text="开始深度分析", command=self.start_analysis, 
-                  style="Accent.TButton").grid(row=3, column=0, columnspan=3, pady=10)
-        
-        # 进度条和状态
-        progress_frame = ttk.Frame(main_frame)
-        progress_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        self.progress = ttk.Progressbar(progress_frame, mode='determinate')
-        self.progress.grid(row=0, column=0, sticky=(tk.W, tk.E))
-        
-        self.status_var = tk.StringVar(value="就绪")
-        ttk.Label(progress_frame, textvariable=self.status_var).grid(row=0, column=1, padx=(10, 0))
+        analyze_btn = Button(
+            text='分析 APK',
+            size_hint_y=None,
+            height=50
+        )
+        analyze_btn.bind(on_press=lambda x: self.analyze_apk(path_input.text))
+        layout.add_widget(analyze_btn)
         
         # 结果显示区域
-        result_frame = ttk.LabelFrame(main_frame, text="分析结果", padding="10")
-        result_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # 创建标签页
-        notebook = ttk.Notebook(result_frame)
-        notebook.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # 总览标签页
-        overview_tab = ttk.Frame(notebook)
-        self.overview_text = scrolledtext.ScrolledText(overview_tab, height=15, width=80)
-        self.overview_text.pack(fill=tk.BOTH, expand=True)
-        notebook.add(overview_tab, text="分析总览")
-        
-        # 详细结果标签页
-        details_tab = ttk.Frame(notebook)
-        self.details_text = scrolledtext.ScrolledText(details_tab, height=15, width=80)
-        self.details_text.pack(fill=tk.BOTH, expand=True)
-        notebook.add(details_tab, text="详细结果")
-        
-        # 文件列表标签页
-        files_tab = ttk.Frame(notebook)
-        self.files_text = scrolledtext.ScrolledText(files_tab, height=15, width=80)
-        self.files_text.pack(fill=tk.BOTH, expand=True)
-        notebook.add(files_tab, text="文件列表")
-        
-        # 菜单栏
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
-        
-        help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="帮助", menu=help_menu)
-        help_menu.add_command(label="关于", command=self.show_about)
-        
-        # 配置网格权重
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(5, weight=1)
-        progress_frame.columnconfigure(0, weight=1)
-        result_frame.columnconfigure(0, weight=1)
-        result_frame.rowconfigure(0, weight=1)
-    
-    def select_apk(self):
-        file_path = filedialog.askopenfilename(
-            title="选择APK文件",
-            filetypes=[("APK files", "*.apk"), ("All files", "*.*")]
+        self.result_display = TextInput(
+            readonly=True,
+            multiline=True,
+            size_hint_y=1
         )
-        if file_path:
-            self.apk_path.set(file_path)
-    
-    def start_analysis(self):
-        if not self.apk_path.get():
-            messagebox.showerror("错误", "请先选择APK文件")
-            return
+        layout.add_widget(self.result_display)
         
-        # 在新线程中执行分析，避免界面冻结
-        thread = threading.Thread(target=self.deep_analyze_apk)
+        self.content_area.add_widget(layout)
+    
+    def show_build_tab(self, instance):
+        """显示构建应用界面"""
+        self.content_area.clear_widgets()
+        
+        layout = BoxLayout(orientation='vertical', spacing=10)
+        
+        # 应用名称
+        layout.add_widget(Label(text='应用名称:', size_hint_y=None, height=30))
+        app_name_input = TextInput(
+            text='My App',
+            multiline=False,
+            size_hint_y=None,
+            height=40
+        )
+        layout.add_widget(app_name_input)
+        
+        # 包名
+        layout.add_widget(Label(text='包名 (Package Name):', size_hint_y=None, height=30))
+        package_input = TextInput(
+            text='org.example.myapp',
+            multiline=False,
+            size_hint_y=None,
+            height=40
+        )
+        layout.add_widget(package_input)
+        
+        # 版本号
+        layout.add_widget(Label(text='版本号:', size_hint_y=None, height=30))
+        version_input = TextInput(
+            text='1.0',
+            multiline=False,
+            size_hint_y=None,
+            height=40
+        )
+        layout.add_widget(version_input)
+        
+        # 构建类型
+        layout.add_widget(Label(text='构建类型:', size_hint_y=None, height=30))
+        build_type_spinner = Spinner(
+            text='调试版 (Debug)',
+            values=('调试版 (Debug)', '发布版 (Release)'),
+            size_hint_y=None,
+            height=40
+        )
+        layout.add_widget(build_type_spinner)
+        
+        # 构建按钮
+        build_btn = Button(
+            text='开始构建',
+            size_hint_y=None,
+            height=60,
+            background_color=(0.2, 0.6, 0.2, 1)
+        )
+        layout.add_widget(build_btn)
+        
+        # 状态显示
+        status_display = TextInput(
+            text='准备就绪',
+            readonly=True,
+            multiline=True,
+            size_hint_y=1
+        )
+        layout.add_widget(status_display)
+        
+        self.content_area.add_widget(layout)
+    
+    def analyze_apk(self, path):
+        """分析 APK 文件"""
+        def run_analysis():
+            if os.path.exists(path):
+                result = self.analyzer.analyze_apk(path)
+                self.display_analysis_result(result)
+            else:
+                self.result_display.text = f'错误: 文件不存在 - {path}'
+        
+        thread = threading.Thread(target=run_analysis)
         thread.daemon = True
         thread.start()
     
-    def deep_analyze_apk(self):
-        try:
-            apk_path = self.apk_path.get()
-            apk_name = Path(apk_path).stem
-            
-            # 清空结果显示
-            self.overview_text.delete(1.0, tk.END)
-            self.details_text.delete(1.0, tk.END)
-            self.files_text.delete(1.0, tk.END)
-            
-            self.update_status("正在解压APK...")
-            self.progress['value'] = 10
-            
-            # 创建临时目录解压APK
-            self.temp_dir = tempfile.mkdtemp(prefix=f"apk_analysis_{apk_name}_")
-            
-            # 完整解压APK
-            self.extract_apk_completely(apk_path, self.temp_dir)
-            self.progress['value'] = 30
-            
-            # 分析文件结构
-            self.update_status("分析文件结构...")
-            file_analysis = self.analyze_file_structure(self.temp_dir)
-            self.progress['value'] = 40
-            
-            # 提取图片
-            if self.extract_images.get():
-                self.update_status("提取图片...")
-                output_dir = f"{apk_name}のPhoto"
-                image_count = self.extract_all_images(self.temp_dir, output_dir)
-            else:
-                image_count = 0
-            
-            self.progress['value'] = 50
-            
-            # 分析Manifest
-            if self.analyze_manifest.get():
-                self.update_status("分析AndroidManifest...")
-                manifest_analysis = self.analyze_android_manifest(self.temp_dir)
-            else:
-                manifest_analysis = {}
-            
-            self.progress['value'] = 60
-            
-            # 分析代码
-            if self.analyze_code.get():
-                self.update_status("分析代码文件...")
-                code_analysis = self.analyze_code_files(self.temp_dir)
-            else:
-                code_analysis = {}
-            
-            self.progress['value'] = 70
-            
-            # 分析资源
-            if self.analyze_resources.get():
-                self.update_status("分析资源文件...")
-                resource_analysis = self.analyze_resource_files(self.temp_dir)
-            else:
-                resource_analysis = {}
-            
-            self.progress['value'] = 80
-            
-            # 检测恶意行为
-            self.update_status("检测恶意行为...")
-            malicious_findings = self.detect_malicious_behavior(
-                manifest_analysis, code_analysis, resource_analysis
-            )
-            
-            self.progress['value'] = 90
-            
-            # 生成报告
-            self.update_status("生成报告...")
-            self.generate_comprehensive_report(
-                apk_name, apk_path, image_count, file_analysis, 
-                manifest_analysis, code_analysis, resource_analysis, 
-                malicious_findings, output_dir if self.extract_images.get() else None
-            )
-            
-            # 创建ZIP文件
-            self.create_comprehensive_zip(apk_name, apk_path, malicious_findings)
-            
-            self.progress['value'] = 100
-            self.update_status("分析完成")
-            
-            # 显示完成提示
-            self.overview_text.insert(tk.END, "\n\n✅ 分析完成！")
-            self.overview_text.insert(tk.END, "\n请添加作者QQ: 2187250895 进行进一步查验")
-            
-        except Exception as e:
-            self.update_status("分析出错")
-            messagebox.showerror("错误", f"分析过程中出现错误: {str(e)}")
-        finally:
-            # 清理临时文件
-            if self.temp_dir and os.path.exists(self.temp_dir):
-                shutil.rmtree(self.temp_dir)
-    
-    def update_status(self, message):
-        self.status_var.set(message)
-        self.root.update()
-    
-    def extract_apk_completely(self, apk_path, extract_dir):
-        """完整解压APK文件"""
-        try:
-            with zipfile.ZipFile(apk_path, 'r') as apk_zip:
-                apk_zip.extractall(extract_dir)
-            
-            # 记录文件列表
-            file_list = []
-            for root, dirs, files in os.walk(extract_dir):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    rel_path = os.path.relpath(file_path, extract_dir)
-                    file_size = os.path.getsize(file_path)
-                    file_list.append(f"{rel_path} ({file_size} bytes)")
-            
-            self.files_text.insert(tk.END, "APK文件列表:\n")
-            self.files_text.insert(tk.END, "\n".join(file_list))
-            
-        except Exception as e:
-            raise Exception(f"解压APK失败: {str(e)}")
-    
-    def analyze_file_structure(self, extract_dir):
-        """分析文件结构"""
-        analysis = {
-            'total_files': 0,
-            'file_types': {},
-            'largest_files': [],
-            'suspicious_files': []
-        }
-        
-        suspicious_extensions = {'.dex', '.so', '.xml', '.json', '.properties'}
-        
-        for root, dirs, files in os.walk(extract_dir):
-            for file in files:
-                analysis['total_files'] += 1
-                file_path = os.path.join(root, file)
-                file_ext = Path(file).suffix.lower()
-                
-                # 统计文件类型
-                analysis['file_types'][file_ext] = analysis['file_types'].get(file_ext, 0) + 1
-                
-                # 检查可疑文件
-                if file_ext in suspicious_extensions:
-                    analysis['suspicious_files'].append(file_path)
-        
-        return analysis
-    
-    def extract_all_images(self, extract_dir, output_dir):
-        """提取所有图片文件"""
-        image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.ico', '.svg'}
-        image_count = 0
-        
-        os.makedirs(output_dir, exist_ok=True)
-        
-        for root, dirs, files in os.walk(extract_dir):
-            for file in files:
-                file_path = Path(file)
-                if file_path.suffix.lower() in image_extensions:
-                    # 创建相对路径
-                    rel_path = Path(root).relative_to(extract_dir)
-                    output_path = Path(output_dir) / rel_path / file
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # 复制文件
-                    shutil.copy2(os.path.join(root, file), output_path)
-                    image_count += 1
-        
-        return image_count
-    
-    def analyze_android_manifest(self, extract_dir):
-        """分析AndroidManifest.xml"""
-        analysis = {
-            'permissions': [],
-            'activities': [],
-            'services': [],
-            'receivers': [],
-            'providers': [],
-            'features': []
-        }
-        
-        manifest_path = os.path.join(extract_dir, 'AndroidManifest.xml')
-        if os.path.exists(manifest_path):
-            try:
-                # 尝试使用AXMLParser2或其他工具解析，这里简化处理
-                with open(manifest_path, 'rb') as f:
-                    content = f.read()
-                    text_content = content.decode('utf-8', errors='ignore')
-                
-                # 简单的权限提取
-                permission_pattern = r'android\.permission\.[A-Z_]+'
-                analysis['permissions'] = re.findall(permission_pattern, text_content)
-                
-                # 提取组件
-                activity_pattern = r'<activity[^>]*android:name="([^"]*)"'
-                analysis['activities'] = re.findall(activity_pattern, text_content)
-                
-                service_pattern = r'<service[^>]*android:name="([^"]*)"'
-                analysis['services'] = re.findall(service_pattern, text_content)
-                
-            except Exception as e:
-                analysis['error'] = f"解析Manifest失败: {str(e)}"
-        
-        return analysis
-    
-    def analyze_code_files(self, extract_dir):
-        """分析代码文件"""
-        analysis = {
-            'suspicious_strings': [],
-            'dangerous_api_calls': [],
-            'urls': [],
-            'file_operations': []
-        }
-        
-        # 可疑字符串模式
-        suspicious_patterns = [
-            (r'lock|锁机|解锁|屏幕锁', '锁机相关'),
-            (r'accessibility|无障碍', '无障碍服务'),
-            (r'qq|tencent|wechat|微信', '社交应用操作'),
-            (r'killProcess|forceStop|uninstall', '进程操作'),
-            (r'System\.exit|Runtime\.getRuntime', '系统操作'),
-            (r'exec|su|root', 'Root相关'),
-            (r'monkey|adb', '自动化操作')
-        ]
-        
-        # 遍历所有文件进行分析
-        for root, dirs, files in os.walk(extract_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
-                try:
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
-                        
-                        # 检查可疑字符串
-                        for pattern, description in suspicious_patterns:
-                            if re.search(pattern, content, re.IGNORECASE):
-                                analysis['suspicious_strings'].append(
-                                    f"{description}: {os.path.relpath(file_path, extract_dir)}"
-                                )
-                        
-                        # 提取URL
-                        urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', content)
-                        analysis['urls'].extend(urls)
-                        
-                except:
-                    continue
-        
-        return analysis
-    
-    def analyze_resource_files(self, extract_dir):
-        """分析资源文件"""
-        analysis = {
-            'strings': [],
-            'layouts': [],
-            'drawables': []
-        }
-        
-        # 分析res目录
-        res_dir = os.path.join(extract_dir, 'res')
-        if os.path.exists(res_dir):
-            # 这里可以添加更详细的资源分析
-            pass
-        
-        return analysis
-    
-    def detect_malicious_behavior(self, manifest_analysis, code_analysis, resource_analysis):
-        """检测恶意行为"""
-        findings = []
-        
-        # 检查危险权限
-        dangerous_permissions = [
-            "android.permission.BIND_ACCESSIBILITY_SERVICE",
-            "android.permission.SYSTEM_ALERT_WINDOW", 
-            "android.permission.WRITE_SECURE_SETTINGS",
-            "android.permission.DEVICE_ADMIN",
-            "android.permission.PACKAGE_USAGE_STATS"
-        ]
-        
-        for perm in manifest_analysis.get('permissions', []):
-            if perm in dangerous_permissions:
-                findings.append(f"危险权限: {perm}")
-        
-        # 检查可疑代码
-        if code_analysis.get('suspicious_strings'):
-            findings.extend(code_analysis['suspicious_strings'])
-        
-        # 检查可疑URL
-        suspicious_domains = ['lock', 'virus', 'hack', 'malware']
-        for url in code_analysis.get('urls', []):
-            if any(domain in url.lower() for domain in suspicious_domains):
-                findings.append(f"可疑URL: {url}")
-        
-        return findings
-    
-    def generate_comprehensive_report(self, apk_name, apk_path, image_count, file_analysis, 
-                                    manifest_analysis, code_analysis, resource_analysis,
-                                    malicious_findings, output_dir):
-        """生成综合分析报告"""
-        
-        # 总览标签页
-        self.overview_text.insert(tk.END, f"APK深度分析报告 - {apk_name}\n")
-        self.overview_text.insert(tk.END, "=" * 60 + "\n\n")
-        
-        self.overview_text.insert(tk.END, f"文件基本信息:\n")
-        self.overview_text.insert(tk.END, f"• APK名称: {apk_name}\n")
-        self.overview_text.insert(tk.END, f"• 文件路径: {apk_path}\n")
-        self.overview_text.insert(tk.END, f"• 总文件数: {file_analysis['total_files']}\n")
-        
-        if output_dir:
-            self.overview_text.insert(tk.END, f"• 提取图片: {image_count} 张\n")
-            self.overview_text.insert(tk.END, f"• 图片目录: {output_dir}\n")
-        
-        self.overview_text.insert(tk.END, f"• 权限数量: {len(manifest_analysis.get('permissions', []))}\n")
-        self.overview_text.insert(tk.END, f"• 活动数量: {len(manifest_analysis.get('activities', []))}\n")
-        self.overview_text.insert(tk.END, f"• 服务数量: {len(manifest_analysis.get('services', []))}\n\n")
-        
-        # 恶意行为检测结果
-        self.overview_text.insert(tk.END, "安全检测结果:\n")
-        if malicious_findings:
-            self.overview_text.insert(tk.END, "🚨 发现可疑行为:\n")
-            for finding in malicious_findings:
-                self.overview_text.insert(tk.END, f"• {finding}\n")
-            
-            risk_level = "高危" if len(malicious_findings) > 3 else "中危" if len(malicious_findings) > 1 else "低危"
-            self.overview_text.insert(tk.END, f"\n⚠️ 风险等级: {risk_level}\n")
+    def display_analysis_result(self, result):
+        """显示分析结果"""
+        if result['status'] == 'error':
+            self.result_display.text = f"分析失败: {result['message']}"
         else:
-            self.overview_text.insert(tk.END, "✅ 未发现明显的恶意行为\n")
-        
-        # 详细结果标签页
-        self.details_text.insert(tk.END, "详细分析结果:\n")
-        self.details_text.insert(tk.END, "=" * 60 + "\n\n")
-        
-        self.details_text.insert(tk.END, "权限列表:\n")
-        for perm in manifest_analysis.get('permissions', []):
-            self.details_text.insert(tk.END, f"• {perm}\n")
-        
-        self.details_text.insert(tk.END, "\n活动列表:\n")
-        for activity in manifest_analysis.get('activities', []):
-            self.details_text.insert(tk.END, f"• {activity}\n")
-        
-        self.details_text.insert(tk.END, "\n服务列表:\n")
-        for service in manifest_analysis.get('services', []):
-            self.details_text.insert(tk.END, f"• {service}\n")
-        
-        self.details_text.insert(tk.END, "\n发现的URL:\n")
-        for url in set(code_analysis.get('urls', [])):  # 去重
-            self.details_text.insert(tk.END, f"• {url}\n")
-    
-    def create_comprehensive_zip(self, apk_name, apk_path, malicious_findings):
-        """创建综合报告ZIP文件"""
-        zip_filename = f"疑似病毒{apk_name}.zip"
-        
-        with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # 添加APK文件
-            zipf.write(apk_path, f"原始APK/{apk_name}.apk")
-            
-            # 添加分析报告
-            report_content = self.overview_text.get(1.0, tk.END)
-            zipf.writestr("分析报告.txt", report_content.encode('utf-8'))
-            
-            # 添加详细报告
-            details_content = self.details_text.get(1.0, tk.END)
-            zipf.writestr("详细分析.txt", details_content.encode('utf-8'))
-            
-            # 添加文件列表
-            files_content = self.files_text.get(1.0, tk.END)
-            zipf.writestr("文件列表.txt", files_content.encode('utf-8'))
-            
-            # 添加图片目录（如果存在）
-            image_dir = f"{apk_name}のPhoto"
-            if os.path.exists(image_dir):
-                for root, dirs, files in os.walk(image_dir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arcname = os.path.join("提取图片", os.path.relpath(file_path, image_dir))
-                        zipf.write(file_path, arcname)
-        
-        self.overview_text.insert(tk.END, f"\n已创建完整报告: {zip_filename}\n")
-    
-    def show_about(self):
-        """显示关于对话框"""
-        about_text = """星辰锁机病毒识别程序 v2.0
+            output = f"""
+APK 分析结果:
+{'='*50}
 
-作者QQ: 2187250895
+包名: {result['manifest'].get('package', 'Unknown')}
+文件大小: {result['size'] / 1024 / 1024:.2f} MB
+资源数量: {result['resources_count']}
 
-功能特性:
-• 完整解压APK文件
-• 深度分析所有文件内容
-• 检测锁机、无障碍服务等恶意行为
-• 分析权限、组件和代码
-• 提取所有图片资源
-• 生成详细分析报告
+顶部资源:
+{chr(10).join(result['resources'][:10])}
+"""
+            self.result_display.text = output
 
-注意: 本工具提供深度分析，检测结果请结合人工验证。"""
-        
-        messagebox.showinfo("关于", about_text)
 
-def main():
-    root = tk.Tk()
-    app = AdvancedAPKAnalyzer(root)
-    root.mainloop()
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    app = XingChenApp()
+    app.run()
