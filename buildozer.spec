@@ -9,7 +9,8 @@ source.include_exts = py,png,jpg,kv
 version = 2.0
 requirements = python3,kivy
 
-bootstrap = webview
+# Use sdl2 bootstrap for Kivy apps on Android
+bootstrap = sdl2
 
 orientation = portrait
 fullscreen = 0
